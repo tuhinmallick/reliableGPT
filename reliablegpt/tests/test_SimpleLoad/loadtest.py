@@ -8,10 +8,8 @@ params = {
   "instance_id": "g54b2f16-966c-4c0c-8eae-f7fdd0902a62"
 }
 
-queries = []
-for i in range(200):
-  query = f"who is person"
-  queries.append(query)
+query = "who is person"
+queries = [query for _ in range(200)]
 
 def make_request(query):
   params["query"] = query

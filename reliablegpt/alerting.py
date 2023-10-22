@@ -28,12 +28,12 @@ class Alerting:
   def send_alert(self, error_type, most_recent_error):
     print(colored("Sending alert", "magenta"))
     params = {
-      "from":
-      "krrish@berri.ai",
-      "subject":
-      """reliableGPT 💪: Unhandled Error - {}""".format(error_type),
-      "html":
-      """
+        "from":
+        "krrish@berri.ai",
+        "subject":
+        f"""reliableGPT 💪: Unhandled Error - {error_type}""",
+        "html":
+        """
             <p><strong>ReliableGPT Error:</strong></p>
             <p>A critical error occurred that ReliableGPT was unable to handle.</p>
             <p>This error has happened 5 times in the last hour:</p>
@@ -44,7 +44,7 @@ class Alerting:
 
         <p>Join our Discord for Support:
         <a href=" https://discord.com/invite/WXFfTeEXRh">Here</a></p>
-            """.format(error_type, most_recent_error)
+            """.format(error_type, most_recent_error),
     }
     for email in self.user_emails:
       params["to"] = email

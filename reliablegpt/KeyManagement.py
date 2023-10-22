@@ -37,7 +37,7 @@ class reliableKey:
                 if not cls.valid_api_key:
                     print(f"invalid key value in get_key: {cls.invalid_key_value}")
                     querystring["invalid_api_key"] = cls.invalid_key_value
-                response = requests.get(cls.api_url+"/get_key", params=querystring)
+                response = requests.get(f"{cls.api_url}/get_key", params=querystring)
                 print(response.text)
                 api_key = response.json()["api_key"]
                 cls.hot_cache[llm_provider] = api_key

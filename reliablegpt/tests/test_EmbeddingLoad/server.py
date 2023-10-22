@@ -34,9 +34,8 @@ def test_fn():
   print("received request")
   try:
     text_string = "sample text" * 200
-    embeddings = openai.Embedding.create(engine="azure-embedding-model",
-                                      input=text_string)['data'][0]['embedding']
-    return embeddings
+    return openai.Embedding.create(engine="azure-embedding-model",
+                                   input=text_string)['data'][0]['embedding']
   except:
     traceback.print_exc()
     return "Error", 500

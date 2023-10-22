@@ -76,50 +76,48 @@ class IndividualRequest:
       self.alerting.add_error(error_type="Unhandled Exception", error_description=traceback.format_exc())
 
   def print_verbose(self, print_statement):
-    posthog.capture('ishaan_admin@berri.ai', 'print_verbose', {'rgpt_data': str(print_statement)[:2000]})
-    if self.verbose:
-      print(colored("Individual Request: " + str(print_statement), "blue"))
+      posthog.capture('ishaan_admin@berri.ai', 'print_verbose', {'rgpt_data': str(print_statement)[:2000]})
+      if self.verbose:
+          print(colored(f"Individual Request: {str(print_statement)}", "blue"))
 
   def start_cooldown(self):
     self.set_cooldown = True
     self.cooldown_start_time = time.time()
 
   def call_model(self, args, kwargs):
-    try: 
-      if self._test: # private function for testing package
-        error = {"type": "RandomError"}
-        raise CustomError(error)
-      if self.set_cooldown:
-        if time.time() - self.cooldown_start_time > 900: # endpoint is being cooled down for 15 minutes, default to fallbacks
-          error = {"type": "ErrorCooldown"}
-          raise(CustomError(error=error))
-        else:
-          self.set_cooldown = False
-      result = self.model_function(*args, **kwargs)
-      if result == None:
-        self.print_verbose(f"None result!")
-        return
-        error = {"type": f"OpenAI Endpoint {self.model_function} returned None"}
-        raise CustomError(error)
-      if "messages" in kwargs:
-        if "engine" in kwargs:
-          self.curr_azure_model = kwargs["engine"]
-        if self.caching:
-          self.print_verbose(kwargs["messages"])
-          input_prompt = "\n".join(message["content"]
-                                  for message in kwargs["messages"])
-          extracted_result = result['choices'][0]['message']['content']
-          self.print_verbose(f'This is extracted result {extracted_result}')
-          self.add_cache(
-            input_prompt, extracted_result
-          )  # [TODO] turn this into a threaded call, reduce latency.
-        self.print_verbose(f"This is the result: {str(result)[:500]}")
-      return result
-    except Exception as e:
-      self.print_verbose(f"Error: {traceback.format_exc()}")
-      self.print_verbose("catches the error")
-      self.start_cooldown()
-      return self.handle_exception(args, kwargs, e)
+      try: 
+          if self._test: # private function for testing package
+            error = {"type": "RandomError"}
+            raise CustomError(error)
+          if self.set_cooldown:
+              if time.time() - self.cooldown_start_time > 900:
+                  error = {"type": "ErrorCooldown"}
+                  raise(CustomError(error=error))
+              else:
+                  self.set_cooldown = False
+          result = self.model_function(*args, **kwargs)
+          if result is None:
+              self.print_verbose("None result!")
+              return
+          if "messages" in kwargs:
+            if "engine" in kwargs:
+              self.curr_azure_model = kwargs["engine"]
+            if self.caching:
+              self.print_verbose(kwargs["messages"])
+              input_prompt = "\n".join(message["content"]
+                                      for message in kwargs["messages"])
+              extracted_result = result['choices'][0]['message']['content']
+              self.print_verbose(f'This is extracted result {extracted_result}')
+              self.add_cache(
+                input_prompt, extracted_result
+              )  # [TODO] turn this into a threaded call, reduce latency.
+            self.print_verbose(f"This is the result: {str(result)[:500]}")
+          return result
+      except Exception as e:
+        self.print_verbose(f"Error: {traceback.format_exc()}")
+        self.print_verbose("catches the error")
+        self.start_cooldown()
+        return self.handle_exception(args, kwargs, e)
     
   async def async_call_model(self, args, kwargs):
     try: 
@@ -155,116 +153,112 @@ class IndividualRequest:
 
   ## Code that handles / wraps openai calls
   def __call__(self, *args, **kwargs):
-    try:
-      self.print_verbose(f"calling model function: {self.model_function}")
-      self.print_verbose(f"these are the kwargs: {kwargs}")
-      self.print_verbose(f"this is the openai api base: {openai.api_base}")
-      self.print_verbose(f"testing enabled: {self._test}")
       try:
-        # this should never block running the openai call
-        # [TODO] make this into a threaded call to reduce impact on latency
-        self.save_request(
-          user_email=self.user_email,
-          graceful_string=self.graceful_string,
-          posthog_event='reliableGPT.request',
-        )
-      except:
-        self.print_verbose("ReliableGPT error occured during saving request")
-      self.print_verbose(f"max threads: {self.max_threads}, caching: {self.caching}")
-      if self.max_threads and self.caching:
-        self.print_verbose(f'current util: {active_count()/self.max_threads}')
-        thread_utilization = active_count()/self.max_threads
-        self.print_verbose(f"Thread utilization: {thread_utilization}")
-        if thread_utilization > 0.8: # over 80% utilization of threads, start returning cached responses
-          if "messages" in kwargs and self.caching:
-            self.print_verbose(kwargs["messages"])
-            input_prompt = "\n".join(message["content"]
-                                    for message in kwargs["messages"])
-            self.print_verbose(
-              f"queue depth is higher than the threshold, start caching")
-            result = self.try_cache_request(query=input_prompt)
-            if self.alerting:
-              # save_exception
-              self.alerting.add_error(error_type="Thread Utilization > 85%", error_description="Your thread utilization is over 85%. We've started responding with cached results, to prevent requests from dropping. Please increase capacity (allocate more threads/servers) to prevent result quality from dropping.")
-            if result == None: # cache miss!
-              pass
-            else:
-              self.print_verbose(f"returns cached result: {result}")
-              self.save_request(
-                user_email=self.user_email,
-                posthog_event='reliableGPT.recovered_request_cache',
-                graceful_string = self.graceful_string,
-                result=result,
-                posthog_metadata={
-                  'error': 'High Thread Utilization',
-                  'recovered_response': result,
-                },
-                errors=['High Thread Utilization'],
-                function_name=str(self.model_function),
-                kwargs=kwargs
-              )
-              return result
-      
-      # Run user request
-      if asyncio.iscoroutinefunction(self.model_function):
-        return self.async_call_model(args=args, kwargs=kwargs)
-      else:
-        return self.call_model(args=args, kwargs=kwargs)
-    except Exception as e:
-      self.print_verbose(f"Error in main call function: {traceback.format_exc()}")
+          self.print_verbose(f"calling model function: {self.model_function}")
+          self.print_verbose(f"these are the kwargs: {kwargs}")
+          self.print_verbose(f"this is the openai api base: {openai.api_base}")
+          self.print_verbose(f"testing enabled: {self._test}")
+          try:
+            # this should never block running the openai call
+            # [TODO] make this into a threaded call to reduce impact on latency
+            self.save_request(
+              user_email=self.user_email,
+              graceful_string=self.graceful_string,
+              posthog_event='reliableGPT.request',
+            )
+          except:
+            self.print_verbose("ReliableGPT error occured during saving request")
+          self.print_verbose(f"max threads: {self.max_threads}, caching: {self.caching}")
+          if self.max_threads and self.caching:
+              self.print_verbose(f'current util: {active_count()/self.max_threads}')
+              thread_utilization = active_count()/self.max_threads
+              self.print_verbose(f"Thread utilization: {thread_utilization}")
+              if thread_utilization > 0.8: # over 80% utilization of threads, start returning cached responses
+                  if "messages" in kwargs and self.caching:
+                      self.print_verbose(kwargs["messages"])
+                      input_prompt = "\n".join(message["content"]
+                                              for message in kwargs["messages"])
+                      self.print_verbose("queue depth is higher than the threshold, start caching")
+                      result = self.try_cache_request(query=input_prompt)
+                      if self.alerting:
+                        # save_exception
+                        self.alerting.add_error(error_type="Thread Utilization > 85%", error_description="Your thread utilization is over 85%. We've started responding with cached results, to prevent requests from dropping. Please increase capacity (allocate more threads/servers) to prevent result quality from dropping.")
+                      if result != None:
+                          self.print_verbose(f"returns cached result: {result}")
+                          self.save_request(
+                            user_email=self.user_email,
+                            posthog_event='reliableGPT.recovered_request_cache',
+                            graceful_string = self.graceful_string,
+                            result=result,
+                            posthog_metadata={
+                              'error': 'High Thread Utilization',
+                              'recovered_response': result,
+                            },
+                            errors=['High Thread Utilization'],
+                            function_name=str(self.model_function),
+                            kwargs=kwargs
+                          )
+                          return result
+
+          # Run user request
+          if asyncio.iscoroutinefunction(self.model_function):
+            return self.async_call_model(args=args, kwargs=kwargs)
+          else:
+            return self.call_model(args=args, kwargs=kwargs)
+      except Exception as e:
+        self.print_verbose(f"Error in main call function: {traceback.format_exc()}")
 
   def add_cache(self, input_prompt, response):
-    try:
-      if self.caching:
-        if request:
-          if request.args and request.args.get("user_email"):
-            customer_id = request.args.get("user_email")
-            if request.args.get("instance_id"):
-              instance_id = request.args.get("instance_id")
-            else:
-              instance_id = 0000 # default instance id if none passed in
-            user_email = self.user_email
-            url = "https://reliablegpt-logging-server-7nq8.zeet-berri.zeet.app/add_cache"
-            querystring = {
-              "customer_id": customer_id,
-              "instance_id": instance_id, 
-              "user_email": user_email, 
-              "input_prompt": input_prompt,
-              "response": response
-            }
-            response = requests.post(url, params=querystring)
-    except:
-      pass
+      try:
+          if request:
+              if self.caching:
+                  if request.args and request.args.get("user_email"):
+                      customer_id = request.args.get("user_email")
+                      instance_id = (
+                          request.args.get("instance_id")
+                          if request.args.get("instance_id")
+                          else 0000
+                      )
+                      user_email = self.user_email
+                      querystring = {
+                        "customer_id": customer_id,
+                        "instance_id": instance_id, 
+                        "user_email": user_email, 
+                        "input_prompt": input_prompt,
+                        "response": response
+                      }
+                      url = "https://reliablegpt-logging-server-7nq8.zeet-berri.zeet.app/add_cache"
+                      response = requests.post(url, params=querystring)
+      except:
+        pass
 
   def try_cache_request(self, query=None):
-    try:
-      if query:
-        self.print_verbose("Inside the cache")
-        if request:
-          if request.args and request.args.get("user_email"):
-            customer_id = request.args.get("user_email")
-            if request.args.get("instance_id"):
-              instance_id = request.args.get("instance_id")
-            else:
-              instance_id = 0000 # default instance id if none passed in
-            user_email = self.user_email
-            url = "https://reliablegpt-logging-server-7nq8.zeet-berri.zeet.app/get_cache"
-            querystring = {
-                "customer_id": customer_id,
-                "instance_id": instance_id, 
-                "user_email": user_email, 
-                "input_prompt": query,
-            }
-            response = requests.get(url, params=querystring)
-            self.print_verbose(f"cached response: {response.json()}")
-            extracted_result = response.json()["response"]
-            results = {"choices":[{"message":{"content": extracted_result}}]}
-            return results
-    except:
-      traceback.print_exc()
-      pass
-    self.print_verbose(f"cache miss!")
-    return None
+      try:
+          if query:
+              self.print_verbose("Inside the cache")
+              if request:
+                  if request.args and request.args.get("user_email"):
+                      customer_id = request.args.get("user_email")
+                      if request.args.get("instance_id"):
+                        instance_id = request.args.get("instance_id")
+                      else:
+                        instance_id = 0000 # default instance id if none passed in
+                      user_email = self.user_email
+                      url = "https://reliablegpt-logging-server-7nq8.zeet-berri.zeet.app/get_cache"
+                      querystring = {
+                          "customer_id": customer_id,
+                          "instance_id": instance_id, 
+                          "user_email": user_email, 
+                          "input_prompt": query,
+                      }
+                      response = requests.get(url, params=querystring)
+                      self.print_verbose(f"cached response: {response.json()}")
+                      extracted_result = response.json()["response"]
+                      return {"choices":[{"message":{"content": extracted_result}}]}
+      except:
+          traceback.print_exc()
+      self.print_verbose("cache miss!")
+      return None
 
   def fallback_request(self, args, kwargs, fallback_strategy):
     try:
@@ -300,64 +294,64 @@ class IndividualRequest:
       return None
 
   def make_LLM_request(self, new_kwargs):
-    embedding_model = self.model.get_original_embeddings()
-    chat_model = self.model.get_original_chat()
-    completion_model = self.model.get_original_completion()
-    try:
-      self.print_verbose(f"{new_kwargs.keys()}")
-      if "azure_fallback" in new_kwargs:
-        new_kwargs_except_azure_fallback_flag = {
-          k: v
-          for k, v in new_kwargs.items() if k != "azure_fallback"
-        }
-        return chat_model(**new_kwargs_except_azure_fallback_flag)
-      if "openai2" in new_kwargs:
-        openai.api_type = "openai"
-        openai.api_base = "https://api.openai.com/v1"
-        openai.api_version = None
-        openai.api_key = self.backup_openai_key
-        new_kwargs_except_openai_attributes = {
-          k: v
-          for k, v in new_kwargs.items() if k != "openai2"
-        }
-        new_kwargs_except_engine = {
-          k: v
-          for k, v in new_kwargs_except_openai_attributes.items()
-          if k != "engine"
-        }
-        completion = self.model_function(**new_kwargs_except_engine)
-        openai.api_type = new_kwargs["openai2"]["api_type"]
-        openai.api_base = new_kwargs["openai2"]["api_base"]
-        openai.api_version = new_kwargs["openai2"]["api_version"]
-        openai.api_key = new_kwargs["openai2"]["api_key"]
-        return completion
-      if "embedding" in str(self.model_function):
-        # retry embedding with diff key
-        self.print_verbose(colored(f"ReliableGPT: Retrying Embedding request", "blue"))
-        return embedding_model(**new_kwargs)
+      embedding_model = self.model.get_original_embeddings()
+      chat_model = self.model.get_original_chat()
+      completion_model = self.model.get_original_completion()
+      try:
+          self.print_verbose(f"{new_kwargs.keys()}")
+          if "azure_fallback" in new_kwargs:
+            new_kwargs_except_azure_fallback_flag = {
+              k: v
+              for k, v in new_kwargs.items() if k != "azure_fallback"
+            }
+            return chat_model(**new_kwargs_except_azure_fallback_flag)
+          if "openai2" in new_kwargs:
+            openai.api_type = "openai"
+            openai.api_base = "https://api.openai.com/v1"
+            openai.api_version = None
+            openai.api_key = self.backup_openai_key
+            new_kwargs_except_openai_attributes = {
+              k: v
+              for k, v in new_kwargs.items() if k != "openai2"
+            }
+            new_kwargs_except_engine = {
+              k: v
+              for k, v in new_kwargs_except_openai_attributes.items()
+              if k != "engine"
+            }
+            completion = self.model_function(**new_kwargs_except_engine)
+            openai.api_type = new_kwargs["openai2"]["api_type"]
+            openai.api_base = new_kwargs["openai2"]["api_base"]
+            openai.api_version = new_kwargs["openai2"]["api_version"]
+            openai.api_key = new_kwargs["openai2"]["api_key"]
+            return completion
+          if "embedding" in str(self.model_function):
+                    # retry embedding with diff key
+              self.print_verbose(colored("ReliableGPT: Retrying Embedding request", "blue"))
+              return embedding_model(**new_kwargs)
 
-      model = str(new_kwargs['model'])
-      self.print_verbose(
-        colored(f"ReliableGPT: Checking request model {model} {new_kwargs}",
+          model = str(new_kwargs['model'])
+          self.print_verbose(
+            colored(f"ReliableGPT: Checking request model {model} {new_kwargs}",
+                    "blue"))
+          if "3.5" in model or "4" in model:  # call ChatCompletion
+            self.print_verbose(
+              colored(
+                f"ReliableGPT: Retrying request with model CHAT {model} {new_kwargs}",
                 "blue"))
-      if "3.5" in model or "4" in model:  # call ChatCompletion
-        self.print_verbose(
-          colored(
-            f"ReliableGPT: Retrying request with model CHAT {model} {new_kwargs}",
-            "blue"))
-        return chat_model(**new_kwargs)
-      else:
-        self.print_verbose(
-          colored(f"ReliableGPT: Retrying request with model TEXT {model}",
-                  "blue"))
-        new_kwargs['prompt'] = " ".join(
-          [message["content"] for message in new_kwargs['messages']])
-        new_kwargs.pop('messages',
-                       None)  # remove messages for completion models
-        return completion_model(**new_kwargs)
-    except Exception as e:
-      self.print_verbose(colored(f"ReliableGPT: Got 2nd AGAIN Error {e}", "red"))
-      raise ValueError(e)
+            return chat_model(**new_kwargs)
+          else:
+            self.print_verbose(
+              colored(f"ReliableGPT: Retrying request with model TEXT {model}",
+                      "blue"))
+            new_kwargs['prompt'] = " ".join(
+              [message["content"] for message in new_kwargs['messages']])
+            new_kwargs.pop('messages',
+                           None)  # remove messages for completion models
+            return completion_model(**new_kwargs)
+      except Exception as e:
+        self.print_verbose(colored(f"ReliableGPT: Got 2nd AGAIN Error {e}", "red"))
+        raise ValueError(e)
 
   def api_key_handler(self, args, kwargs, fallback_strategy, user_email,
                       user_token):
@@ -399,148 +393,134 @@ class IndividualRequest:
                           graceful_string,
                           user_email="",
                           user_token=""):
-    # Error Types from https://platform.openai.com/docs/guides/error-codes/python-library-error-types
-    # 1. APIError - retry, retry with fallback
-    # 2. Timeout - retry, retry with fallback
-    # 3. RateLimitError - retry, retry with fallback
-    # 4. APIConnectionError - Check your network settings, proxy configuration, SSL certificates, or firewall rules.
-    # 5. InvalidRequestError - User input was bad: context_length_exceeded,
-    # 6. AuthenticationError - API key not working, return default hardcoded message
-    # 7. ServiceUnavailableError - retry, retry with fallback
-    self.print_verbose(
-      colored(f"Inside handle openai error for User Email: {user_email}",
-              "red"))
-    if openAI_error != None:
-      openAI_error = openAI_error.error  # index into the error attribute of the class
+      # Error Types from https://platform.openai.com/docs/guides/error-codes/python-library-error-types
+      # 1. APIError - retry, retry with fallback
+      # 2. Timeout - retry, retry with fallback
+      # 3. RateLimitError - retry, retry with fallback
+      # 4. APIConnectionError - Check your network settings, proxy configuration, SSL certificates, or firewall rules.
+      # 5. InvalidRequestError - User input was bad: context_length_exceeded,
+      # 6. AuthenticationError - API key not working, return default hardcoded message
+      # 7. ServiceUnavailableError - retry, retry with fallback
+      self.print_verbose(
+        colored(f"Inside handle openai error for User Email: {user_email}",
+                "red"))
+      if openAI_error != None:
+        openAI_error = openAI_error.error  # index into the error attribute of the class
 
-    error_type = None  # defalt to being None
-    if openAI_error != None and 'type' in openAI_error:
-      error_type = openAI_error['type']
-    if error_type == 'invalid_request_error' or error_type == 'InvalidRequestError':
-      # check if this is context window related, try with a 16k model
-      if openAI_error.code == 'context_length_exceeded':
-        self.print_verbose(
-          colored(
-            "ReliableGPT: invalid request error - context_length_exceeded",
-            "red"))
-        fallback_strategy = ['gpt-3.5-turbo-16k'] + fallback_strategy
-        result = self.fallback_request(args=args,
-                                       kwargs=kwargs,
-                                       fallback_strategy=fallback_strategy)
-        if result == None:
-          return graceful_string
-        else:
-          return result
-      if openAI_error.code == "invalid_api_key":
-        self.print_verbose(
-          colored("ReliableGPT: invalid request error - invalid_api_key",
+      error_type = None  # defalt to being None
+      if openAI_error != None and 'type' in openAI_error:
+        error_type = openAI_error['type']
+      if error_type in ['invalid_request_error', 'InvalidRequestError']:
+              # check if this is context window related, try with a 16k model
+          if openAI_error.code == 'context_length_exceeded':
+              self.print_verbose(
+                colored(
+                  "ReliableGPT: invalid request error - context_length_exceeded",
                   "red"))
-        result = self.api_key_handler(args=args,
-                                      kwargs=kwargs,
-                                      fallback_strategy=fallback_strategy,
-                                      user_email=user_email,
-                                      user_token=user_token)
-        if result == None:
+              fallback_strategy = ['gpt-3.5-turbo-16k'] + fallback_strategy
+              result = self.fallback_request(args=args,
+                                             kwargs=kwargs,
+                                             fallback_strategy=fallback_strategy)
+              return graceful_string if result is None else result
+          if openAI_error.code == "invalid_api_key":
+              self.print_verbose(
+                colored("ReliableGPT: invalid request error - invalid_api_key",
+                        "red"))
+              result = self.api_key_handler(args=args,
+                                            kwargs=kwargs,
+                                            fallback_strategy=fallback_strategy,
+                                            user_email=user_email,
+                                            user_token=user_token)
+              return graceful_string if result is None else result
+      elif error_type in ['authentication_error', 'AuthenticationError']:
+          self.print_verbose(colored("ReliableGPT: Auth error", "red"))
           return graceful_string
-        else:
-          return result
 
-    # todo: alert on user_email that there is now an auth error
-    elif error_type == 'authentication_error' or error_type == 'AuthenticationError':
-      self.print_verbose(colored("ReliableGPT: Auth error", "red"))
-      return graceful_string
-
-    # catch all
-    result = self.fallback_request(args=args,
-                                   kwargs=kwargs,
-                                   fallback_strategy=fallback_strategy)
-    if result == None:
-      return graceful_string
-    else:
-      return result
-    return graceful_string
+      # catch all
+      result = self.fallback_request(args=args,
+                                     kwargs=kwargs,
+                                     fallback_strategy=fallback_strategy)
+      return graceful_string if result is None else result
 
   def handle_exception(self, args, kwargs, e):
-    result = self.graceful_string  # default to graceful string
-    try:
-      # Attempt No. 1, exception is received from OpenAI
-      self.print_verbose(colored(f"ReliableGPT: Got Exception {e}", 'red'))
-      result = self.handle_openAI_error(
-        args=args,
-        kwargs=kwargs,
-        openAI_error=e,
-        fallback_strategy=self.fallback_strategy,
-        graceful_string=self.graceful_string,
-        user_email=self.user_email,
-        user_token=self.user_token)
-      self.print_verbose(
-        colored(f"ReliableGPT: Recovered got a successful response {result}",
-                "green"))
-      if result == self.graceful_string:
-        # did a retry with model fallback, so now try caching.
-        if "messages" in kwargs and self.caching:
-          self.print_verbose(kwargs["messages"])
-          input_prompt = "\n".join(message["content"]
-                                   for message in kwargs["messages"])
-          cached_response = self.try_cache_request(query=input_prompt)
-          if cached_response == None:
-            pass
+      result = self.graceful_string  # default to graceful string
+      try:
+          # Attempt No. 1, exception is received from OpenAI
+          self.print_verbose(colored(f"ReliableGPT: Got Exception {e}", 'red'))
+          result = self.handle_openAI_error(
+            args=args,
+            kwargs=kwargs,
+            openAI_error=e,
+            fallback_strategy=self.fallback_strategy,
+            graceful_string=self.graceful_string,
+            user_email=self.user_email,
+            user_token=self.user_token)
+          self.print_verbose(
+            colored(f"ReliableGPT: Recovered got a successful response {result}",
+                    "green"))
+          if result == self.graceful_string:
+                    # did a retry with model fallback, so now try caching.
+              if "messages" in kwargs and self.caching:
+                  self.print_verbose(kwargs["messages"])
+                  input_prompt = "\n".join(message["content"]
+                                           for message in kwargs["messages"])
+                  cached_response = self.try_cache_request(query=input_prompt)
+                  if cached_response != None:
+                      self.save_request(
+                        user_email=self.user_email,
+                        posthog_event='reliableGPT.recovered_request_cache',
+                        graceful_string = self.graceful_string,
+                        result=cached_response,
+                        posthog_metadata={
+                          'error': 'High Thread Utilization',
+                          'recovered_response': cached_response,
+                        },
+                        errors=['High Thread Utilization'],
+                        function_name=str(self.model_function),
+                        kwargs=kwargs
+                      )
+                      return cached_response
+              self.save_request(
+                user_email=self.user_email,
+                graceful_string=self.graceful_string,
+                posthog_event='reliableGPT.recovered_request_exception',
+                result=result,
+                posthog_metadata={
+                  'error': str(e),
+                  'recovered_response': result
+                },
+                errors=[e],
+                function_name=str(self.model_function),
+                kwargs=kwargs)
           else:
-            self.save_request(
-              user_email=self.user_email,
-              posthog_event='reliableGPT.recovered_request_cache',
-              graceful_string = self.graceful_string,
-              result=cached_response,
-              posthog_metadata={
-                'error': 'High Thread Utilization',
-                'recovered_response': cached_response,
-              },
-              errors=['High Thread Utilization'],
-              function_name=str(self.model_function),
-              kwargs=kwargs
-            )
-            return cached_response
+              # No errors, successfull retry
+              self.save_request(user_email=self.user_email,
+                                graceful_string=self.graceful_string,
+                                posthog_event="reliableGPT.recovered_request",
+                                result=result,
+                                posthog_metadata={
+                                  'error': str(e),
+                                  'recovered_response': result
+                                },
+                                errors=[e],
+                                function_name=str(self.model_function),
+                                kwargs=kwargs)
+      except Exception as e2:
+        # Exception 2, After trying to rescue
+        traceback.print_exc()
+        self.print_verbose("gets 2nd error: ", e2)
         self.save_request(
           user_email=self.user_email,
           graceful_string=self.graceful_string,
           posthog_event='reliableGPT.recovered_request_exception',
-          result=result,
+          result="",
           posthog_metadata={
-            'error': str(e),
-            'recovered_response': result
+            'original_error': str(e),
+            'error2': str(e2),
+            'recovered_response': self.graceful_string
           },
-          errors=[e],
+          errors=[e, e2],
           function_name=str(self.model_function),
           kwargs=kwargs)
-      else:
-        # No errors, successfull retry
-        self.save_request(user_email=self.user_email,
-                          graceful_string=self.graceful_string,
-                          posthog_event="reliableGPT.recovered_request",
-                          result=result,
-                          posthog_metadata={
-                            'error': str(e),
-                            'recovered_response': result
-                          },
-                          errors=[e],
-                          function_name=str(self.model_function),
-                          kwargs=kwargs)
-    except Exception as e2:
-      # Exception 2, After trying to rescue
-      traceback.print_exc()
-      self.print_verbose("gets 2nd error: ", e2)
-      self.save_request(
-        user_email=self.user_email,
-        graceful_string=self.graceful_string,
-        posthog_event='reliableGPT.recovered_request_exception',
-        result="",
-        posthog_metadata={
-          'original_error': str(e),
-          'error2': str(e2),
-          'recovered_response': self.graceful_string
-        },
-        errors=[e, e2],
-        function_name=str(self.model_function),
-        kwargs=kwargs)
-      raise e
-    return result
+        raise e
+      return result
