@@ -71,12 +71,9 @@ def save_request(user_email,
 
       # Log unhandled exceptions in R-GPT servers
       if posthog_event == 'reliableGPT.recovered_request_exception':
-        original_error = ""
-        error2 = ""
-        if 'error' in posthog_metadata:
-          original_error = posthog_metadata['error']
-        if 'error2' in posthog_metadata:
-          error2 = posthog_metadata['error2']
+        original_error = (posthog_metadata['error']
+                          if 'error' in posthog_metadata else "")
+        error2 = posthog_metadata['error2'] if 'error2' in posthog_metadata else ""
         save_exception(type = 'unhandled', user_email=user_email, result=result, original_error=original_error, error2=error2, function_name=function_name, kwargs=kwargs)
 
     if result == graceful_string or len(
@@ -86,7 +83,6 @@ def save_request(user_email,
         alerting.add_error(error)
       # send_emails_task(self.user_email, posthog_metadata, self.send_notification)
   except:
-    pass
     return  # safe function, should not impact error handling if logging fails
 
 
@@ -111,9 +107,8 @@ def reliableGPT(openai_create_function,
   if isinstance(user_email, str):
     if user_email == "":
       raise ValueError("ReliableGPT Error: Please pass in a user email")
-    else:
-      alerting.add_emails(user_email)
-      primary_email = user_email
+    alerting.add_emails(user_email)
+    primary_email = user_email
   elif isinstance(user_email, list):
     primary_email = user_email[0]
     for email in user_email:
